@@ -270,7 +270,7 @@ class DatasetGenerator:
 
     def _is_valid(self, item: dict[str, Any]) -> bool:
         """Check required fields are present and non-empty."""
-        min_len = {"instruction": 10, "output": 10, "category": 3}
+        min_len = {"instruction": 10, "output": 10, "category": 3, "source_reference": 6}
         return all(
             field in item and isinstance(item[field], str) and len(item[field]) >= min_len[field]
             for field in min_len
