@@ -67,3 +67,6 @@ scripts/_*.py
 # ── Hugging Face cache ────────────────────────────────────────────────────────
 .cache/
 ~/.cache/huggingface/
+
+# ── Graphify knowledge graph (regenerable via /graphify) ──────────────────────
+graphify-out/
