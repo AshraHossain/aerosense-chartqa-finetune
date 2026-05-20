@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dev dependencies
+        run: |
+          pip install --upgrade pip
+          pip install ruff mypy pytest pytest-cov loguru pyyaml pydantic anthropic
+
+      - name: Lint with ruff
+        run: ruff check src/ scripts/ tests/
+
+      - name: Type check with mypy
+        run: mypy src/ --ignore-missing-imports --no-strict-optional
+
+      - name: Run unit tests
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          pytest tests/ -v --cov=src --cov-report=term-missing \
+            --ignore=tests/test_training.py   # Skip training tests in CI (no GPU)
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: matrix.python-version == '3.11'
+        continue-on-error: true

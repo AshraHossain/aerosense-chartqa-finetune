@@ -1,0 +1,69 @@
+# ── Secrets ───────────────────────────────────────────────────────────────────
+.env
+*.pem
+*.key
+secrets/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+pip-log.txt
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Generated dataset (large, regenerable via run_pipeline.py --step dataset) ─
+data/synthetic/train.jsonl
+data/synthetic/eval.jsonl
+data/synthetic/dry_run.jsonl
+
+# ── Model outputs (large binaries) ────────────────────────────────────────────
+outputs/
+models/*.gguf
+models/*.bin
+models/*.safetensors
+
+# ── Experiment tracking ────────────────────────────────────────────────────────
+mlruns/
+wandb/
+.wandb/
+lightning_logs/
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+Thumbs.db
+desktop.ini
+
+# ── IDE / Claude Code ─────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.claude/settings.local.json
+*.swp
+*.swo
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Temp / scratch scripts ────────────────────────────────────────────────────
+scripts/_*.py
+
+# ── Hugging Face cache ────────────────────────────────────────────────────────
+.cache/
+~/.cache/huggingface/
