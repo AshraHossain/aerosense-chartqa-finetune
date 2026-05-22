@@ -25,17 +25,7 @@ from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTConfig, SFTTrainer
 
-ALPACA_PROMPT = """Below is an instruction related to aeronautical charts and aviation procedures.
-Write a response that accurately answers the question.
-
-### Instruction:
-{}
-
-### Input:
-{}
-
-### Response:
-{}"""
+from src.prompts import format_for_training
 
 
 class LoRATrainer:
@@ -136,31 +126,49 @@ class LoRATrainer:
         return str(merged_path)
 
     def export_gguf(self, merged_path: str | Path, quantization: str = "q4_k_m") -> str:
-        """Export merged model to GGUF format via llama.cpp convert script."""
-        gguf_path = Path("models") / f"aerosense-chartqa-lora-{quantization}.gguf"
-        gguf_path.parent.mkdir(parents=True, exist_ok=True)
+        """Export merged model to GGUF format via llama.cpp.
 
-        logger.info(f"Exporting to GGUF ({quantization}) → {gguf_path}")
-
-        # Try llama.cpp conversion (must be installed separately)
+        Step 1: convert_hf_to_gguf.py → f16 GGUF (always available).
+        Step 2: llama-quantize → q4_k_m (requires brew install llama.cpp).
+        If llama-quantize is not found, returns the f16 GGUF and logs a warning.
+        """
         convert_script = Path("llama.cpp/convert_hf_to_gguf.py")
         if not convert_script.exists():
             raise FileNotFoundError(
                 "llama.cpp/convert_hf_to_gguf.py not found. "
-                "Clone llama.cpp and run `make` first, or install via brew."
+                "Run: git clone https://github.com/ggerganov/llama.cpp --depth=1"
             )
 
+        Path("models").mkdir(parents=True, exist_ok=True)
+        f16_path = Path("models") / "aerosense-chartqa-lora-f16.gguf"
+        final_path = Path("models") / f"aerosense-chartqa-lora-{quantization}.gguf"
+
+        # Step 1: HF → f16 GGUF
+        logger.info(f"Converting to f16 GGUF → {f16_path}")
         subprocess.run(
-            [
-                sys.executable, str(convert_script),
-                str(merged_path),
-                "--outfile", str(gguf_path),
-                "--outtype", quantization,
-            ],
+            [sys.executable, str(convert_script), str(merged_path),
+             "--outfile", str(f16_path), "--outtype", "f16"],
             check=True,
         )
-        logger.success(f"GGUF export complete → {gguf_path}")
-        return str(gguf_path)
+
+        # Step 2: f16 → q4_k_m (requires llama-quantize binary)
+        import shutil
+        quantize_bin = shutil.which("llama-quantize")
+        if quantize_bin:
+            logger.info(f"Quantizing f16 → {quantization} → {final_path}")
+            subprocess.run(
+                [quantize_bin, str(f16_path), str(final_path), quantization.upper()],
+                check=True,
+            )
+            logger.success(f"GGUF export complete → {final_path}")
+            return str(final_path)
+        else:
+            logger.warning(
+                "llama-quantize not found — returning f16 GGUF. "
+                "Install via: brew install llama.cpp, then re-run export_gguf()."
+            )
+            logger.success(f"GGUF export complete (f16) → {f16_path}")
+            return str(f16_path)
 
     # ── Private helpers ──────────────────────────────────────────────────────
 
@@ -202,7 +210,7 @@ class LoRATrainer:
         with open(path, encoding="utf-8") as f:
             for line in f:
                 ex = json.loads(line.strip())
-                text = ALPACA_PROMPT.format(
+                text = format_for_training(
                     ex["instruction"],
                     ex.get("input", ""),
                     ex["output"],
