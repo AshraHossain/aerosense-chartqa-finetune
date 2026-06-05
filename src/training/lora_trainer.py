@@ -33,8 +33,8 @@ class LoRATrainer:
 
     def __init__(self, config_path: str | Path = "configs/lora_config.yaml") -> None:
         self.config = self._load_config(config_path)
-        self.model = None
-        self.tokenizer = None
+        self.model: Any = None
+        self.tokenizer: Any = None
 
     # ── Public API ───────────────────────────────────────────────────────────
 

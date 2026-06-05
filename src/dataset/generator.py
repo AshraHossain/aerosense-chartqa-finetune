@@ -249,7 +249,9 @@ class DatasetGenerator:
             messages=[{"role": "user", "content": user_prompt}],
         )
 
-        content = message.content[0].text.strip()
+        block = message.content[0]
+        assert isinstance(block, anthropic.types.TextBlock)
+        content = block.text.strip()
 
         # Strip markdown code fences if present
         if content.startswith("```"):

@@ -1,0 +1,28 @@
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = false
+warn_unused_configs = true
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = [
+    "torch",
+    "torch.*",
+    "transformers",
+    "transformers.*",
+    "peft",
+    "peft.*",
+    "trl",
+    "trl.*",
+    "mlflow",
+    "mlflow.*",
+    "wandb",
+    "wandb.*",
+    "anthropic",
+    "anthropic.*",
+    "datasets",
+    "datasets.*",
+    "loguru",
+    "loguru.*",
+]
+ignore_missing_imports = true

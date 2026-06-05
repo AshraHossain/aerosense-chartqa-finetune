@@ -60,7 +60,9 @@ def call_claude(client: anthropic.Anthropic, prompt: str) -> list[dict]:
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
-    content = message.content[0].text.strip()
+    block = message.content[0]
+    assert isinstance(block, anthropic.types.TextBlock)
+    content = block.text.strip()
     if content.startswith("```"):
         lines = content.split("\n")
         content = "\n".join(lines[1:-1])
@@ -179,7 +181,7 @@ def main() -> None:
         print(f"  difficulty       : {sample.get('difficulty')}")
         print(f"  safety_critical  : {sample.get('safety_critical')}")
         print(f"  source_reference : {sample.get('source_reference')}")
-        print(f"  instruction      : {sample.get('instruction')[:100]}")
+        print(f"  instruction      : {str(sample.get('instruction', ''))[:100]}")
         print(f"  output (preview) : {str(sample.get('output', ''))[:150]}...")
     print("=" * 60)
 

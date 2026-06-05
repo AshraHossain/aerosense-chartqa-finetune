@@ -44,7 +44,9 @@ def call_claude(client: anthropic.Anthropic, prompt: str) -> list[dict]:
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
-    content = msg.content[0].text.strip()
+    block = msg.content[0]
+    assert isinstance(block, anthropic.types.TextBlock)
+    content = block.text.strip()
     if content.startswith("```"):
         lines = content.split("\n")
         content = "\n".join(lines[1:-1])
