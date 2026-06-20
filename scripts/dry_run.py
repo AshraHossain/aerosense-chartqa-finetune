@@ -22,10 +22,10 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 # Allow imports from project root
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import anthropic
-from loguru import logger
+import anthropic  # noqa: E402
+from loguru import logger  # noqa: E402
 
-from src.dataset.generator import (
+from src.dataset.generator import (  # noqa: E402
     CATEGORIES,
     DIFFICULTY_LEVELS,
     GENERATION_PROMPT_TEMPLATE,
@@ -160,7 +160,7 @@ def main() -> None:
     n_total = len(all_items)
     n_errors = len(all_errors)
     print("\n" + "=" * 60)
-    print(f"DRY RUN REPORT")
+    print("DRY RUN REPORT")
     print("=" * 60)
     print(f"  Examples generated : {n_total}")
     print(f"  Schema errors      : {n_errors}")

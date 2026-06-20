@@ -10,23 +10,24 @@ from __future__ import annotations
 
 import json
 import random
+import sys
 import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from loguru import logger
-from src.dataset.generator import (
+import anthropic  # noqa: E402
+from loguru import logger  # noqa: E402
+
+from src.dataset.generator import (  # noqa: E402
     CATEGORIES,
     DIFFICULTY_LEVELS,
     GENERATION_PROMPT_TEMPLATE,
     SYSTEM_PROMPT,
 )
-import anthropic
 
 MODEL = "claude-sonnet-4-6"
 BATCH_SIZE = 5
@@ -64,7 +65,7 @@ def is_valid(item: dict) -> bool:
 def read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    return [json.loads(l) for l in path.read_text(encoding="utf-8").strip().splitlines() if l.strip()]
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").strip().splitlines() if line.strip()]
 
 
 def write_jsonl(examples: list[dict], path: Path) -> None:

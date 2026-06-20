@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 
 from loguru import logger
-from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 

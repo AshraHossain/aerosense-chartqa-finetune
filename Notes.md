@@ -71,6 +71,81 @@ Each training example has a `source_reference` field (e.g. "FAA AIM 3-2-6") but
 
 ## Status
 Analysis only — no code, training data, or pipeline files were modified this session.
-Next step offered but not yet done: pull sample `safety_critical`/`approach_procedures`
-training examples with their `source_reference` for manual verification against FAR/AIM
-text.
+
+---
+
+## Follow-up investigation (same session, continued)
+
+### Step 1 — Training data quality audit (spot-check, 12 examples)
+Sampled 4 examples each from `safety_critical`, `approach_procedures`, `airspace` in
+`data/synthetic/train.jsonl` and checked against known FAA AIM/CFR/TERPS content.
+
+- **11/12 verified factually accurate.**
+- **1 error found:** the `approach_procedures` example on the intermediate fix (IF)
+  states final-approach-segment obstacle clearance as "300 feet" — the correct TERPS
+  value (FAA Order 8260.3) for a non-precision final segment in non-mountainous terrain
+  is **250 feet**. Minor but real fabricated number in the training set.
+
+**Conclusion: training data quality is NOT the dominant root cause.** This overturns the
+original hypothesis from the first half of this session.
+
+### Step 1b — Decisive counter-example: training data was correct, model still failed
+Traced the single worst eval failure (qlora, unusual-attitude recovery, safety_refusal=0.0,
+reversed control inputs) back to source:
+- `data/synthetic/train.jsonl` contains a near-identical question with the **correct**
+  procedure: "reduce power to idle → level wings → then apply back pressure."
+- The eval.jsonl reference answer for the held-out paraphrase is also correct, same
+  sequence.
+- **All three models (base, lora, qlora) still got it wrong at inference.** qlora
+  inverted it dangerously: "apply full rudder... advance throttle fully... helps pull the
+  nose down" (backwards — that's the high-speed nose-low recovery error pattern, exactly
+  what the training data warns against).
+
+This proves: correct knowledge existed in training data, but fine-tuning did not
+transfer it to inference behavior on a held-out paraphrase. The bottleneck is
+generalization/training capacity, not data correctness.
+
+### Step 2 — Hyperparameter inspection (`configs/lora_config.yaml`, `configs/qlora_config.yaml`)
+Found a concrete configuration anomaly:
+
+| | rank (r) | alpha | alpha/r ratio |
+|---|---|---|---|
+| LoRA  | 16 | 32 | **2.0** |
+| QLoRA | 64 | 16 | **0.25** |
+
+Standard practice keeps alpha/r roughly constant (commonly alpha = 2×r, as LoRA's config
+does). QLoRA's config breaks this: despite 4× higher rank, its actual update scaling is
+**8× weaker** than LoRA's. Effectively, the QLoRA adapter barely perturbs the base
+model's weights — consistent with QLoRA's eval results tracking closest to base model
+behavior, and with QLoRA producing the most erratic/dangerous outputs (a weak, diluted
+adapter signal leaves the base model's pre-existing confusion as the dominant influence,
+with 4-bit training-time quantization noise added on top).
+
+Also notable: 395 training examples × 3 epochs ÷ effective batch size 16 (batch 4 ×
+grad-accum 4) ≈ **~74 total optimizer steps**. Likely too few steps for a 3B model to
+robustly generalize safety-critical procedures to paraphrased held-out questions,
+independent of the alpha/r issue.
+
+### Step 3 — Inference/quantization path inspection
+Checked `models/Modelfile-lora` and `models/Modelfile-qlora` (Ollama serving configs) and
+confirmed both LoRA and QLoRA adapters were merged and exported to **f16 GGUF** (full
+precision, not 4-bit) with **identical** serving parameters (temperature 0.3, same stop
+tokens, same system prompt). Ruled out: the qlora vs lora behavioral gap is not explained
+by the inference/serving path — it traces back to training, specifically the
+alpha/r scaling mismatch and/or insufficient training steps.
+
+### Revised recommendation
+1. Do not ship LoRA or QLoRA as-is — neither reliably improves safety-critical procedural
+   accuracy over base, and QLoRA actively regresses on the worst case found.
+2. Fix `configs/qlora_config.yaml`: align alpha/r ratio with LoRA's convention (e.g.
+   `lora_alpha: 128` for `r: 64` to match the 2:1 ratio), then re-run training and re-eval
+   before drawing conclusions about QLoRA vs LoRA.
+3. Consider more training steps/epochs and/or upsampling `safety_critical` examples
+   (currently the largest category by count but still the worst-performing) — the
+   ~74-step training run may simply be too short for reliable generalization.
+3. (lower priority) Fix the TERPS final-segment clearance value (250 ft, not 300 ft) in
+   the `approach_procedures` training example identified above.
+4. Any of the above (config change + retrain) is a pipeline/training change — flagged for
+   explicit confirmation before executing, per standing instruction in this session.
+
+No training configs, model files, or scripts were modified — diagnosis only.
