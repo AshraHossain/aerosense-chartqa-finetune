@@ -29,6 +29,8 @@ class QLoRATrainer(LoRATrainer):
     QLoRA adapter capacity trade-off without the quantization memory saving.
     """
 
+    model_export_name = "qlora"
+
     def __init__(self, config_path: str | Path = "configs/qlora_config.yaml") -> None:
         super().__init__(config_path)
 

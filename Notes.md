@@ -149,3 +149,73 @@ alpha/r scaling mismatch and/or insufficient training steps.
    explicit confirmation before executing, per standing instruction in this session.
 
 No training configs, model files, or scripts were modified — diagnosis only.
+
+---
+
+## Follow-through: retrain executed, CI fixed, tests added (same session, continued)
+
+### QLoRA retrain with the alpha/r fix
+Ran `python -m src.training.qlora_trainer` locally (Apple M4, ~10.2 hours wall time —
+this hardware loads in bfloat16 on MPS, not true 4-bit NF4, since bitsandbytes NF4 is
+unavailable on Apple Silicon; see `src/training/qlora_trainer.py` docstring). Training
+loss dropped 2.12 → 0.95 over 3 epochs/75 steps; eval_loss 1.63 at epoch 1, mean token
+accuracy rose from 0.55 to 0.74. Re-running the LLM-judge eval harness against this
+retrained model (to get updated hallucination/safety_refusal scores comparable to the
+original base/lora/qlora numbers above) is the next step, not yet done.
+
+**Disk-space incident, handled:** freed space by deleting old QLoRA checkpoints
+(`outputs/qlora/checkpoint-*`, `adapter/`, `merged/`) before retraining — confirmed with
+user first. The original eval *scores* for that run are preserved in
+`outputs/evaluation/qlora_*.{json,jsonl}` and were not touched.
+
+### Bug found during retrain: GGUF export filename collision (data loss)
+`LoRATrainer.export_gguf()` in `src/training/lora_trainer.py` hardcoded its output
+filename to `models/aerosense-chartqa-lora-{f16,quantization}.gguf` regardless of which
+trainer subclass called it. Both `LoRATrainer` and `QLoRATrainer` (which inherits the
+method unchanged) wrote to the same path. Consequence: this QLoRA retrain's export step
+silently **overwrote the original LoRA model's GGUF file**, and the original (pre-fix)
+QLoRA GGUF was already gone (likely overwritten by an earlier run for the same reason).
+The eval *scores* for the original base/lora/qlora comparison survived (separate
+`outputs/evaluation/*.jsonl` files), but the original model binaries are unrecoverable
+without retraining from the saved adapters/checkpoints (also since deleted — see above).
+
+**Fix applied:** added a `model_export_name` class attribute (`"lora"` on `LoRATrainer`,
+overridden to `"qlora"` on `QLoRATrainer`), used to build the export filename. Renamed
+the just-produced (correct, fixed-alpha) artifacts to
+`models/aerosense-chartqa-qlora-fixed-{f16,q4_k_m}.gguf` to avoid further confusion.
+Regression-tested in `tests/test_training.py::TestGgufExportNaming`.
+
+### CI was failing on PR #1 — two separate, both pre-existing, both fixed
+1. **12 ruff lint errors** in `scripts/dry_run.py`, `scripts/run_pipeline.py`,
+   `scripts/topup_airspace.py`, `src/training/qlora_trainer.py` — all pre-existing on
+   `main`, unrelated to this branch's original Notes.md-only diff. Fixed: reordered
+   `sys.path.insert()` before local imports with `# noqa: E402` where unavoidable,
+   renamed an ambiguous `l` variable, removed 2 unused `peft` imports.
+2. **pytest exit code 5 ("no tests collected")** — `tests/` contained only `__init__.py`,
+   no actual test files, on `main` and on this branch. (I initially missed this locally
+   because I piped pytest through `tail`, which masked the real exit code — worth
+   remembering: never trust `$?` after a pipe.) Fixed by adding a real test suite (see
+   below) and adding `mlflow`+`pandas` to the CI install step (`judge.py` imports both at
+   module level; CI didn't have them).
+
+### Test suite added
+- `tests/test_prompts.py` (8 tests) — Alpaca prompt template formatting.
+- `tests/test_generator.py` (19 tests) — `DatasetGenerator._is_valid`, `_deduplicate`,
+  `_write_jsonl`, category/difficulty constants, API-key-free construction.
+- `tests/test_judge.py` (13 tests) — `LLMJudge._load_eval_set`, `_summarize`,
+  `EvalSummary.as_dict`, empty-response short-circuit.
+- `tests/test_training.py` (8 tests) — config loading, plus regression tests that
+  directly encode the two bugs found this session: the alpha/r ratio fix and the GGUF
+  filename collision fix. **Excluded from CI** (`--ignore=tests/test_training.py`,
+  pre-existing convention) since it imports the full torch/transformers/peft/trl stack,
+  which CI intentionally doesn't install (no GPU runner). Run locally via
+  `.venv/bin/python -m pytest tests/test_training.py`.
+- Total: 48 tests, all passing locally. Coverage on CI-tested modules
+  (`prompts.py`, `generator.py`, `judge.py`): 100/46/55% respectively. `src/training/*`
+  and `src/inference/*` remain at 0% in CI's coverage report (by design — see above);
+  `src/training/*` has separate local-only coverage via `test_training.py`.
+
+### Status
+All fixes pushed to branch `session-notes-chartqa-eval-analysis` (PR #1). Pending:
+confirm CI goes green on the new push; re-run eval harness against the retrained QLoRA
+model and add the before/after comparison to this file.

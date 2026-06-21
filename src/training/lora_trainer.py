@@ -31,6 +31,10 @@ from src.prompts import format_for_training
 class LoRATrainer:
     """Fine-tunes Qwen2.5-3B with LoRA using PEFT + TRL on Apple Silicon MPS."""
 
+    #: GGUF export filename stem — overridden by subclasses (e.g. QLoRATrainer)
+    #: so LoRA and QLoRA exports never collide on the same output file.
+    model_export_name: str = "lora"
+
     def __init__(self, config_path: str | Path = "configs/lora_config.yaml") -> None:
         self.config = self._load_config(config_path)
         self.model: Any = None
@@ -140,8 +144,8 @@ class LoRATrainer:
             )
 
         Path("models").mkdir(parents=True, exist_ok=True)
-        f16_path = Path("models") / "aerosense-chartqa-lora-f16.gguf"
-        final_path = Path("models") / f"aerosense-chartqa-lora-{quantization}.gguf"
+        f16_path = Path("models") / f"aerosense-chartqa-{self.model_export_name}-f16.gguf"
+        final_path = Path("models") / f"aerosense-chartqa-{self.model_export_name}-{quantization}.gguf"
 
         # Step 1: HF → f16 GGUF
         logger.info(f"Converting to f16 GGUF → {f16_path}")
