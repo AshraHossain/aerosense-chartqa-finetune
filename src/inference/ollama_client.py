@@ -6,6 +6,8 @@ Ollama local inference wrapper for the fine-tuned AeroSense ChartQA model.
 
 from __future__ import annotations
 
+from typing import Any
+
 import requests
 from loguru import logger
 
@@ -34,7 +36,7 @@ class OllamaClient:
         """Generate a response for a given aviation question."""
         prompt = format_for_inference(question, context)
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
             "stream": False,
