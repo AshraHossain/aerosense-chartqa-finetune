@@ -22,10 +22,10 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 # Allow imports from project root
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import anthropic
-from loguru import logger
+import anthropic  # noqa: E402
+from loguru import logger  # noqa: E402
 
-from src.dataset.generator import (
+from src.dataset.generator import (  # noqa: E402
     CATEGORIES,
     DIFFICULTY_LEVELS,
     GENERATION_PROMPT_TEMPLATE,
@@ -60,7 +60,9 @@ def call_claude(client: anthropic.Anthropic, prompt: str) -> list[dict]:
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
-    content = message.content[0].text.strip()
+    block = message.content[0]
+    assert isinstance(block, anthropic.types.TextBlock)
+    content = block.text.strip()
     if content.startswith("```"):
         lines = content.split("\n")
         content = "\n".join(lines[1:-1])
@@ -158,7 +160,7 @@ def main() -> None:
     n_total = len(all_items)
     n_errors = len(all_errors)
     print("\n" + "=" * 60)
-    print(f"DRY RUN REPORT")
+    print("DRY RUN REPORT")
     print("=" * 60)
     print(f"  Examples generated : {n_total}")
     print(f"  Schema errors      : {n_errors}")
@@ -179,7 +181,7 @@ def main() -> None:
         print(f"  difficulty       : {sample.get('difficulty')}")
         print(f"  safety_critical  : {sample.get('safety_critical')}")
         print(f"  source_reference : {sample.get('source_reference')}")
-        print(f"  instruction      : {sample.get('instruction')[:100]}")
+        print(f"  instruction      : {str(sample.get('instruction', ''))[:100]}")
         print(f"  output (preview) : {str(sample.get('output', ''))[:150]}...")
     print("=" * 60)
 

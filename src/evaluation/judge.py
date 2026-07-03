@@ -229,7 +229,9 @@ class LLMJudge:
                 }],
             )
 
-            content = message.content[0].text.strip()
+            block = message.content[0]
+            assert isinstance(block, anthropic.types.TextBlock)
+            content = block.text.strip()
             if content.startswith("```"):
                 content = "\n".join(content.split("\n")[1:-1])
 

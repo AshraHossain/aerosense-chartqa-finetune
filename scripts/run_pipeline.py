@@ -22,9 +22,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from loguru import logger
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from loguru import logger  # noqa: E402
 
 # ── Step functions ────────────────────────────────────────────────────────────
 

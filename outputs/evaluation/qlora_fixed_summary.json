@@ -1,0 +1,8 @@
+{
+  "model_name": "qlora_fixed",
+  "n_examples": 50,
+  "mean_domain_accuracy": 3.62,
+  "mean_hallucination_score": 0.268,
+  "mean_safety_refusal_score": 0.418,
+  "std_domain_accuracy": 1.64
+}
