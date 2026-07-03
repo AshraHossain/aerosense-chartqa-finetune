@@ -34,6 +34,30 @@ class QLoRATrainer(LoRATrainer):
     def __init__(self, config_path: str | Path = "configs/qlora_config.yaml") -> None:
         super().__init__(config_path)
 
+    # ── Override: upsample safety_critical examples ───────────────────────────
+
+    def _prepare_dataset(self, path: str | Path):  # type: ignore[override]
+        import json
+        from datasets import Dataset
+        from src.prompts import format_for_training
+
+        n = self.config["training"].get("safety_critical_upsample", 1)
+        examples = []
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                ex = json.loads(line.strip())
+                text = format_for_training(
+                    ex["instruction"],
+                    ex.get("input", ""),
+                    ex["output"],
+                ) + self.tokenizer.eos_token
+                repeat = n if ex.get("category") == "safety_critical" else 1
+                examples.extend([{"text": text, **ex}] * repeat)
+
+        if n > 1:
+            logger.info(f"safety_critical upsampled {n}× — total examples: {len(examples)}")
+        return Dataset.from_list(examples)
+
     # ── Override: load model (4-bit on CUDA, bfloat16 fallback on MPS) ────────
 
     def _load_model(self) -> None:
