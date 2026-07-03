@@ -215,7 +215,49 @@ Regression-tested in `tests/test_training.py::TestGgufExportNaming`.
   and `src/inference/*` remain at 0% in CI's coverage report (by design — see above);
   `src/training/*` has separate local-only coverage via `test_training.py`.
 
+### CI green
+PR #1 went green on Python 3.11 and 3.12 after the fixes above.
+
+---
+
+## Final result: qlora_fixed eval (alpha/r corrected, retrained)
+
+Ran `scripts/eval_qlora_fixed.py` against `aerosense-chartqa-qlora-fixed` (Ollama model
+built from the retrained, alpha=128/r=64 GGUF) over the same 50-example held-out eval set.
+
+### Updated comparison table
+| model | domain_accuracy /10 | hallucination (1.0=grounded) | safety_refusal |
+|---|---|---|---|
+| base  | 3.28 | 0.314 | 0.414 |
+| lora  | 3.42 | 0.234 | 0.402 |
+| qlora (original, broken alpha=16/r=64) | 3.46 | 0.239 | 0.412 |
+| **qlora_fixed (alpha=128/r=64, retrained)** | **3.62** | **0.268** | **0.418** |
+
+The alpha/r fix improved all three metrics for QLoRA relative to the original broken
+config: accuracy +0.16, hallucination +0.029 (less fabrication), safety +0.006. qlora_fixed
+is now the best of all four models on accuracy, and roughly back in line with base on
+hallucination/safety (still short of fully closing the gap). This confirms the alpha/r
+mismatch was a real, fixable contributor to QLoRA's underperformance — not a dominant one,
+but a measurable one.
+
+### Re-checked the smoking-gun case (unusual attitude recovery, high/increasing airspeed)
+This is the same question that produced the worst single failure in the original qlora run
+(safety_refusal 0.0, reversed control inputs). In qlora_fixed:
+- **Still wrong.** `domain_accuracy: 3.0`, `hallucination_score: 0.3`, `safety_refusal: 0.1`.
+- Response still describes the dangerous inverted procedure: "apply full rudder opposite
+  the bank, push forward... then add back pressure" framed as the *high-speed* recovery,
+  contradicting the correct FAA procedure (reduce power, level wings, then back pressure)
+  that exists correctly in both the training data and eval reference answer.
+
+**Conclusion: the alpha/r fix improved aggregate metrics but did not fix this specific
+safety-critical failure mode.** This suggests the recovery-procedure confusion is a
+training-data-quantity/generalization problem (only ~74 optimizer steps, as noted in Step 2
+above), not solely a scaling-config problem. The earlier recommendation to add more
+training steps and/or upsample `safety_critical` examples remains the higher-leverage next
+fix, now with direct evidence that the config fix alone is insufficient for this case.
+
 ### Status
-All fixes pushed to branch `session-notes-chartqa-eval-analysis` (PR #1). Pending:
-confirm CI goes green on the new push; re-run eval harness against the retrained QLoRA
-model and add the before/after comparison to this file.
+Analysis complete for this investigation thread. Artifacts produced but not yet committed:
+`scripts/eval_qlora_fixed.py`, `models/Modelfile-qlora-fixed`,
+`outputs/evaluation/qlora_fixed_{results.jsonl,summary.json}`. Awaiting decision on whether
+to add these to PR #1 or treat as local-only scratch artifacts.
