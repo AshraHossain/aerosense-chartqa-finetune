@@ -25,7 +25,7 @@ jobs:
       - name: Install dev dependencies
         run: |
           pip install --upgrade pip
-          pip install ruff mypy pytest pytest-cov loguru pyyaml pydantic anthropic mlflow pandas
+          pip install ruff "mypy>=1.10" pytest pytest-cov loguru pyyaml pydantic anthropic mlflow pandas numpy
 
       - name: Lint with ruff
         run: ruff check src/ scripts/ tests/
