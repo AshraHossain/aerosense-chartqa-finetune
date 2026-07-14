@@ -73,3 +73,6 @@ scripts/_*.py
 
 # ── Graphify knowledge graph (regenerable via /graphify) ──────────────────────
 graphify-out/
+
+# vendored llama.cpp build (local only, 184MB)
+llama.cpp/
