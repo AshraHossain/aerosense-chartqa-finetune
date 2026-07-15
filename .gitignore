@@ -29,7 +29,10 @@ data/synthetic/eval.jsonl
 data/synthetic/dry_run.jsonl
 
 # ── Model outputs (large binaries) ────────────────────────────────────────────
-outputs/
+outputs/qlora/
+outputs/lora/
+outputs/merged/
+outputs/adapter/
 models/*.gguf
 models/*.bin
 models/*.safetensors
@@ -70,3 +73,6 @@ scripts/_*.py
 
 # ── Graphify knowledge graph (regenerable via /graphify) ──────────────────────
 graphify-out/
+
+# vendored llama.cpp build (local only, 184MB)
+llama.cpp/

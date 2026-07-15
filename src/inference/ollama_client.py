@@ -6,20 +6,12 @@ Ollama local inference wrapper for the fine-tuned AeroSense ChartQA model.
 
 from __future__ import annotations
 
+from typing import Any
+
 import requests
 from loguru import logger
 
-ALPACA_PROMPT = """Below is an instruction related to aeronautical charts and aviation procedures.
-Write a response that accurately answers the question.
-
-### Instruction:
-{instruction}
-
-### Input:
-{context}
-
-### Response:
-"""
+from src.prompts import format_for_inference
 
 
 class OllamaClient:
@@ -42,9 +34,9 @@ class OllamaClient:
         temperature: float = 0.1,   # Low temp for factual aviation answers
     ) -> str:
         """Generate a response for a given aviation question."""
-        prompt = ALPACA_PROMPT.format(instruction=question, context=context)
+        prompt = format_for_inference(question, context)
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
             "stream": False,
@@ -68,7 +60,9 @@ class OllamaClient:
         try:
             r = requests.get(f"{self.base_url}/api/tags", timeout=5)
             models = [m["name"] for m in r.json().get("models", [])]
-            if self.model not in models:
+            # Match with or without :latest tag
+            model_names = {m.split(":")[0] for m in models} | set(models)
+            if self.model not in model_names:
                 logger.warning(
                     f"Model '{self.model}' not found in Ollama. "
                     f"Available: {models}. "

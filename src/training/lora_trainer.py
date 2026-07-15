@@ -1,47 +1,44 @@
 """
 src/training/lora_trainer.py
 
-Fine-tunes Qwen2.5-3B using LoRA (full precision) via Unsloth.
+Fine-tunes Qwen2.5-3B using LoRA via PEFT + TRL on Apple Silicon (MPS).
 Logs training metrics to both W&B and MLflow.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 import mlflow
+import torch
 import wandb
 import yaml
 from datasets import Dataset
 from loguru import logger
-from transformers import TrainingArguments
-from trl import SFTTrainer
-from unsloth import FastLanguageModel
+from peft import LoraConfig, get_peft_model
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from trl import SFTConfig, SFTTrainer
 
-ALPACA_PROMPT = """Below is an instruction related to aeronautical charts and aviation procedures.
-Write a response that accurately answers the question.
-
-### Instruction:
-{}
-
-### Input:
-{}
-
-### Response:
-{}"""
-
-EOS_TOKEN_PLACEHOLDER = "<|endoftext|>"
+from src.prompts import format_for_training
 
 
 class LoRATrainer:
-    """Fine-tunes Qwen2.5-3B with LoRA using Unsloth for efficiency."""
+    """Fine-tunes Qwen2.5-3B with LoRA using PEFT + TRL on Apple Silicon MPS."""
+
+    #: GGUF export filename stem — overridden by subclasses (e.g. QLoRATrainer)
+    #: so LoRA and QLoRA exports never collide on the same output file.
+    model_export_name: str = "lora"
 
     def __init__(self, config_path: str | Path = "configs/lora_config.yaml") -> None:
         self.config = self._load_config(config_path)
-        self.model = None
-        self.tokenizer = None
+        self.model: Any = None
+        self.tokenizer: Any = None
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -76,36 +73,38 @@ class LoRATrainer:
         # 5. Build trainer
         trainer = SFTTrainer(
             model=self.model,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
-            dataset_text_field="text",
-            max_seq_length=self.config["training"]["max_seq_length"],
-            dataset_num_proc=2,
-            packing=False,
             args=training_args,
         )
 
-        # 6. Train with W&B + MLflow logging
+        # 6. Train (W&B + MLflow optional)
         output_dir = self.config["training"]["output_dir"]
+        use_mlflow = bool(os.environ.get("MLFLOW_TRACKING_URI"))
+        use_wandb = bool(os.environ.get("WANDB_API_KEY"))
 
-        with mlflow.start_run(run_name="lora-finetune"):
-            mlflow.log_params(self._flatten_config())
-            wandb.init(
-                project=self.config["logging"]["wandb_project"],
-                name="lora-finetune",
-                config=self.config,
-            )
+        ctx = mlflow.start_run(run_name="lora-finetune") if use_mlflow else contextlib.nullcontext()
+        with ctx:
+            if use_mlflow:
+                mlflow.log_params(self._flatten_config())
+            if use_wandb:
+                wandb.init(
+                    project=self.config["logging"]["wandb_project"],
+                    name="lora-finetune",
+                    config=self.config,
+                )
 
             logger.info("Starting LoRA training...")
             trainer_stats = trainer.train()
 
-            # Log final metrics
             final_loss = trainer_stats.training_loss
-            mlflow.log_metric("final_train_loss", final_loss)
+            if use_mlflow:
+                mlflow.log_metric("final_train_loss", final_loss)
             logger.success(f"Training complete. Final loss: {final_loss:.4f}")
 
-            wandb.finish()
+            if use_wandb:
+                wandb.finish()
 
         # 7. Save adapter weights
         adapter_path = Path(output_dir) / "adapter"
@@ -124,27 +123,56 @@ class LoRATrainer:
         merged_path = Path(self.config["training"]["output_dir"]) / "merged"
         logger.info(f"Merging adapter into base model → {merged_path}")
 
-        self.model.save_pretrained_merged(
-            str(merged_path),
-            self.tokenizer,
-            save_method="merged_16bit",
-        )
+        merged_model = self.model.merge_and_unload()
+        merged_model.save_pretrained(str(merged_path))
+        self.tokenizer.save_pretrained(str(merged_path))
         logger.success(f"Merged model saved → {merged_path}")
         return str(merged_path)
 
     def export_gguf(self, merged_path: str | Path, quantization: str = "q4_k_m") -> str:
-        """Export merged model to GGUF format for Ollama."""
-        gguf_path = Path("models") / f"aerosense-chartqa-lora-{quantization}.gguf"
-        gguf_path.parent.mkdir(parents=True, exist_ok=True)
+        """Export merged model to GGUF format via llama.cpp.
 
-        logger.info(f"Exporting to GGUF ({quantization}) → {gguf_path}")
-        self.model.save_pretrained_gguf(
-            str(gguf_path.with_suffix("")),
-            self.tokenizer,
-            quantization_method=quantization,
+        Step 1: convert_hf_to_gguf.py → f16 GGUF (always available).
+        Step 2: llama-quantize → q4_k_m (requires brew install llama.cpp).
+        If llama-quantize is not found, returns the f16 GGUF and logs a warning.
+        """
+        convert_script = Path("llama.cpp/convert_hf_to_gguf.py")
+        if not convert_script.exists():
+            raise FileNotFoundError(
+                "llama.cpp/convert_hf_to_gguf.py not found. "
+                "Run: git clone https://github.com/ggerganov/llama.cpp --depth=1"
+            )
+
+        Path("models").mkdir(parents=True, exist_ok=True)
+        f16_path = Path("models") / f"aerosense-chartqa-{self.model_export_name}-f16.gguf"
+        final_path = Path("models") / f"aerosense-chartqa-{self.model_export_name}-{quantization}.gguf"
+
+        # Step 1: HF → f16 GGUF
+        logger.info(f"Converting to f16 GGUF → {f16_path}")
+        subprocess.run(
+            [sys.executable, str(convert_script), str(merged_path),
+             "--outfile", str(f16_path), "--outtype", "f16"],
+            check=True,
         )
-        logger.success(f"GGUF export complete → {gguf_path}")
-        return str(gguf_path)
+
+        # Step 2: f16 → q4_k_m (requires llama-quantize binary)
+        import shutil
+        quantize_bin = shutil.which("llama-quantize")
+        if quantize_bin:
+            logger.info(f"Quantizing f16 → {quantization} → {final_path}")
+            subprocess.run(
+                [quantize_bin, str(f16_path), str(final_path), quantization.upper()],
+                check=True,
+            )
+            logger.success(f"GGUF export complete → {final_path}")
+            return str(final_path)
+        else:
+            logger.warning(
+                "llama-quantize not found — returning f16 GGUF. "
+                "Install via: brew install llama.cpp, then re-run export_gguf()."
+            )
+            logger.success(f"GGUF export complete (f16) → {f16_path}")
+            return str(f16_path)
 
     # ── Private helpers ──────────────────────────────────────────────────────
 
@@ -152,11 +180,13 @@ class LoRATrainer:
         model_cfg = self.config["model"]
         logger.info(f"Loading base model: {model_cfg['name']}")
 
-        self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-            model_name=model_cfg["name"],
-            max_seq_length=self.config["training"]["max_seq_length"],
-            dtype=None,          # Auto-detect: bfloat16 on M4
-            load_in_4bit=False,  # Full precision for LoRA
+        self.tokenizer = AutoTokenizer.from_pretrained(model_cfg["name"])
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_cfg["name"],
+            torch_dtype=torch.bfloat16,
         )
         logger.info("Base model loaded ✓")
 
@@ -166,25 +196,17 @@ class LoRATrainer:
             f"Applying LoRA adapters (r={lora_cfg['r']}, alpha={lora_cfg['lora_alpha']})"
         )
 
-        self.model = FastLanguageModel.get_peft_model(
-            self.model,
+        peft_config = LoraConfig(
             r=lora_cfg["r"],
-            target_modules=lora_cfg["target_modules"],
             lora_alpha=lora_cfg["lora_alpha"],
+            target_modules=lora_cfg["target_modules"],
             lora_dropout=lora_cfg["lora_dropout"],
             bias=lora_cfg["bias"],
-            use_gradient_checkpointing="unsloth",
-            random_state=42,
-            use_rslora=False,
-            loftq_config=None,
+            task_type="CAUSAL_LM",
         )
-
-        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in self.model.parameters())
-        logger.info(
-            f"Trainable params: {trainable_params:,} / {total_params:,} "
-            f"({100 * trainable_params / total_params:.2f}%)"
-        )
+        self.model = get_peft_model(self.model, peft_config)
+        self.model.print_trainable_parameters()
+        logger.info("LoRA adapters applied ✓")
 
     def _prepare_dataset(self, path: str | Path) -> Dataset:
         """Load JSONL and format as Alpaca prompt strings."""
@@ -192,7 +214,7 @@ class LoRATrainer:
         with open(path, encoding="utf-8") as f:
             for line in f:
                 ex = json.loads(line.strip())
-                text = ALPACA_PROMPT.format(
+                text = format_for_training(
                     ex["instruction"],
                     ex.get("input", ""),
                     ex["output"],
@@ -201,9 +223,9 @@ class LoRATrainer:
 
         return Dataset.from_list(examples)
 
-    def _build_training_args(self) -> TrainingArguments:
+    def _build_training_args(self) -> SFTConfig:
         t = self.config["training"]
-        return TrainingArguments(
+        return SFTConfig(
             per_device_train_batch_size=t["per_device_train_batch_size"],
             gradient_accumulation_steps=t["gradient_accumulation_steps"],
             warmup_ratio=t["warmup_ratio"],
@@ -212,16 +234,20 @@ class LoRATrainer:
             fp16=t["fp16"],
             bf16=t["bf16"],
             logging_steps=self.config["logging"]["log_steps"],
-            optim="adamw_8bit",
+            optim="adamw_torch",  # adamw_8bit requires bitsandbytes CUDA; use torch on MPS
             weight_decay=0.01,
             lr_scheduler_type=t["lr_scheduler_type"],
             seed=42,
             output_dir=t["output_dir"],
-            report_to=["wandb", "mlflow"],
-            evaluation_strategy="epoch",
+            report_to=[r for r in ["wandb", "mlflow"] if os.environ.get({"wandb": "WANDB_API_KEY", "mlflow": "MLFLOW_TRACKING_URI"}[r])],
+            eval_strategy="epoch",
             save_strategy="epoch",
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
+            dataset_text_field="text",
+            max_length=t["max_seq_length"],
+            dataset_num_proc=2,
+            packing=False,
         )
 
     def _flatten_config(self) -> dict[str, Any]:

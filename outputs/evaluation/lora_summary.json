@@ -1,0 +1,8 @@
+{
+  "model_name": "lora",
+  "n_examples": 50,
+  "mean_domain_accuracy": 3.42,
+  "mean_hallucination_score": 0.234,
+  "mean_safety_refusal_score": 0.402,
+  "std_domain_accuracy": 1.341
+}

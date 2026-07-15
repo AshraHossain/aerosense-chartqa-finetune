@@ -1,112 +1,155 @@
 """
 src/training/qlora_trainer.py
 
-Fine-tunes Qwen2.5-3B with QLoRA (4-bit NF4 quantization) via Unsloth + bitsandbytes.
-Designed for memory-constrained environments. Extends LoRATrainer with quantization overrides.
+Fine-tunes Qwen2.5-3B with QLoRA configuration via PEFT + TRL on Apple Silicon MPS.
+NF4 4-bit quantization (bitsandbytes) is not available on MPS; loads in bfloat16 with
+a higher LoRA rank (r=64) to replicate the QLoRA capacity trade-off.
 """
 
 from __future__ import annotations
 
+import contextlib
+import os
 from pathlib import Path
 
-import mlflow
-import wandb
 from loguru import logger
-from unsloth import FastLanguageModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
 
 from src.training.lora_trainer import LoRATrainer
 
 
 class QLoRATrainer(LoRATrainer):
     """
-    QLoRA variant — loads base model in 4-bit NF4 quantization.
-    Everything else (adapter application, dataset prep, training loop) is inherited.
+    QLoRA-configuration trainer for Apple Silicon MPS.
 
-    Key differences vs LoRA:
-    - load_in_4bit=True with bitsandbytes NF4 quantization
-    - Higher LoRA rank (r=64) to compensate for quantization noise
-    - Lower alpha (16) for stable gradient flow
-    - Slightly higher learning rate typical for QLoRA
+    On CUDA: loads base model in 4-bit NF4 (bitsandbytes) + r=64 LoRA.
+    On MPS:  bitsandbytes NF4 is unavailable — loads in bfloat16 + r=64 LoRA.
+    The higher rank (vs LoRA r=16) and slightly higher LR replicate the
+    QLoRA adapter capacity trade-off without the quantization memory saving.
     """
+
+    model_export_name = "qlora"
 
     def __init__(self, config_path: str | Path = "configs/qlora_config.yaml") -> None:
         super().__init__(config_path)
 
-    # ── Override: load model in 4-bit ────────────────────────────────────────
+    # ── Override: upsample safety_critical examples ───────────────────────────
+
+    def _prepare_dataset(self, path: str | Path):  # type: ignore[override]
+        import json
+        from datasets import Dataset
+        from src.prompts import format_for_training
+
+        n = self.config["training"].get("safety_critical_upsample", 1)
+        examples = []
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                ex = json.loads(line.strip())
+                text = format_for_training(
+                    ex["instruction"],
+                    ex.get("input", ""),
+                    ex["output"],
+                ) + self.tokenizer.eos_token
+                repeat = n if ex.get("category") == "safety_critical" else 1
+                examples.extend([{"text": text, **ex}] * repeat)
+
+        if n > 1:
+            logger.info(f"safety_critical upsampled {n}× — total examples: {len(examples)}")
+        return Dataset.from_list(examples)
+
+    # ── Override: load model (4-bit on CUDA, bfloat16 fallback on MPS) ────────
 
     def _load_model(self) -> None:
         model_cfg = self.config["model"]
-        logger.info(f"Loading base model in 4-bit NF4: {model_cfg['name']}")
+        logger.info(f"Loading base model for QLoRA: {model_cfg['name']}")
 
-        self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-            model_name=model_cfg["name"],
-            max_seq_length=self.config["training"]["max_seq_length"],
-            dtype=None,
-            load_in_4bit=True,                                    # ← QLoRA: 4-bit
-        )
+        use_4bit = model_cfg.get("load_in_4bit", False) and torch.cuda.is_available()
 
-        total_params = sum(p.numel() for p in self.model.parameters())
-        logger.info(
-            f"4-bit model loaded ✓  |  Parameters: {total_params / 1e9:.2f}B  "
-            f"|  Estimated VRAM: ~{total_params * 0.5 / 1e9:.1f}GB (NF4)"
-        )
+        if use_4bit:
+            from transformers import BitsAndBytesConfig
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_use_double_quant=model_cfg.get("bnb_4bit_use_double_quant", True),
+                bnb_4bit_quant_type=model_cfg.get("bnb_4bit_quant_type", "nf4"),
+                bnb_4bit_compute_dtype=torch.bfloat16,
+            )
+            self.tokenizer = AutoTokenizer.from_pretrained(model_cfg["name"])
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_cfg["name"],
+                quantization_config=bnb_config,
+                device_map="auto",
+            )
+            logger.info("4-bit NF4 model loaded ✓ (bitsandbytes CUDA path)")
+        else:
+            logger.info("MPS detected — bitsandbytes NF4 unavailable; loading bfloat16 (r=64 compensates)")
+            self.tokenizer = AutoTokenizer.from_pretrained(model_cfg["name"])
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_cfg["name"],
+                torch_dtype=torch.bfloat16,
+            )
+            logger.info("bfloat16 model loaded ✓")
 
-    # ── Override: train() to use qlora run names ─────────────────────────────
+    # ── Override: train() with qlora run names and optional W&B/MLflow ────────
 
     def train(
         self,
         train_path: str | Path = "data/synthetic/train.jsonl",
         eval_path: str | Path = "data/synthetic/eval.jsonl",
     ) -> str:
-        """QLoRA training run — overrides run name for W&B / MLflow tracking."""
-        logger.info("=== QLoRA Fine-Tuning Pipeline (4-bit NF4) ===")
+        """QLoRA training run — same loop as LoRA, different run names."""
+        import mlflow
+        import wandb
+        from trl import SFTTrainer
+
+        logger.info("=== QLoRA Fine-Tuning Pipeline (r=64) ===")
 
         self._load_model()
         self._apply_lora()
 
-        from datasets import Dataset
-
         train_dataset = self._prepare_dataset(train_path)
         eval_dataset = self._prepare_dataset(eval_path)
-
-        logger.info(
-            f"Dataset: {len(train_dataset)} train / {len(eval_dataset)} eval examples"
-        )
-
-        from trl import SFTTrainer
+        logger.info(f"Dataset: {len(train_dataset)} train / {len(eval_dataset)} eval examples")
 
         training_args = self._build_training_args()
 
         trainer = SFTTrainer(
             model=self.model,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
-            dataset_text_field="text",
-            max_seq_length=self.config["training"]["max_seq_length"],
-            dataset_num_proc=2,
-            packing=False,
             args=training_args,
         )
 
         output_dir = self.config["training"]["output_dir"]
+        use_mlflow = bool(os.environ.get("MLFLOW_TRACKING_URI"))
+        use_wandb = bool(os.environ.get("WANDB_API_KEY"))
 
-        with mlflow.start_run(run_name="qlora-finetune"):
-            mlflow.log_params(self._flatten_config())
-            wandb.init(
-                project=self.config["logging"]["wandb_project"],
-                name="qlora-finetune",
-                config=self.config,
-            )
+        ctx = mlflow.start_run(run_name="qlora-finetune") if use_mlflow else contextlib.nullcontext()
+        with ctx:
+            if use_mlflow:
+                mlflow.log_params(self._flatten_config())
+            if use_wandb:
+                wandb.init(
+                    project=self.config["logging"]["wandb_project"],
+                    name="qlora-finetune",
+                    config=self.config,
+                )
 
             logger.info("Starting QLoRA training...")
             trainer_stats = trainer.train()
 
             final_loss = trainer_stats.training_loss
-            mlflow.log_metric("final_train_loss", final_loss)
+            if use_mlflow:
+                mlflow.log_metric("final_train_loss", final_loss)
             logger.success(f"QLoRA training complete. Final loss: {final_loss:.4f}")
 
-            wandb.finish()
+            if use_wandb:
+                wandb.finish()
 
         adapter_path = Path(output_dir) / "adapter"
         self.model.save_pretrained(str(adapter_path))
@@ -115,26 +158,20 @@ class QLoRATrainer(LoRATrainer):
 
         return str(adapter_path)
 
+    # ── Override: merge_and_export using standard PEFT ────────────────────────
+
     def merge_and_export(self, adapter_path: str | Path) -> str:
-        """
-        QLoRA merge: dequantize + merge → save as fp16.
-        Note: merged model will be larger than 4-bit checkpoint.
-        """
+        """Merge QLoRA adapter into base model weights and save as bfloat16."""
         if self.model is None:
             self._load_model()
             self._apply_lora()
 
         merged_path = Path(self.config["training"]["output_dir"]) / "merged"
-        logger.info(
-            f"Dequantizing and merging QLoRA adapter → {merged_path}\n"
-            "Note: merged model saved as fp16 (~6GB for 3B params)"
-        )
+        logger.info(f"Merging QLoRA adapter into base model → {merged_path}")
 
-        self.model.save_pretrained_merged(
-            str(merged_path),
-            self.tokenizer,
-            save_method="merged_16bit",
-        )
+        merged_model = self.model.merge_and_unload()
+        merged_model.save_pretrained(str(merged_path))
+        self.tokenizer.save_pretrained(str(merged_path))
         logger.success(f"Merged model saved → {merged_path}")
         return str(merged_path)
 

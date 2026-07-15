@@ -1,0 +1,8 @@
+{
+  "model_name": "base",
+  "n_examples": 50,
+  "mean_domain_accuracy": 3.28,
+  "mean_hallucination_score": 0.314,
+  "mean_safety_refusal_score": 0.414,
+  "std_domain_accuracy": 1.341
+}
